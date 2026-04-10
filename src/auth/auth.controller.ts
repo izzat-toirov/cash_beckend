@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Logger,
   Req,
   Res,
   UseGuards,
@@ -30,6 +31,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly configService: ConfigService,
+    private readonly logger = new Logger(AuthController.name)
   ) {}
 
   // ── API key tekshiruvi (oldingi) ──────────────────────────
@@ -66,7 +68,9 @@ export class AuthController {
   googleCallback(@Req() req: RequestWithUser, @Res() res: Response) {
     const token = this.authService.signJwt(req.user);
     const frontendUrl = this.configService.getOrThrow('FRONTEND_URL');
-    res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
+    const redirectUrl = `${frontendUrl}/auth/callback?token=${token}`;
+    this.logger.log(`Redirecting to: ${redirectUrl.substring(0, 80)}...`);
+    res.redirect(redirectUrl);
   }
 
   // ── JWT bilan himoyalangan ────────────────────────────────
