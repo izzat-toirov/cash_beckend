@@ -639,27 +639,18 @@ export class GoogleSheetsService {
     // Fayl USER'ning Drive'ida yaratiladi — quota muammosi yo'q
     const { data } = await userDrive.files.copy({
       fileId: templateId,
-      requestBody: {
-        name: `Cashflow — ${displayName}`,
-      },
+      requestBody: { name: `Cashflow — ${displayName}` },
       fields: 'id',
     });
-  
+    
     const newSheetId = data.id!;
     this.logger.log(`Yangi sheet yaratildi: ${newSheetId} (${email})`);
-  
-    // Service Account'ga editor ruxsat berish — keyingi yozishlar uchun
-    const serviceAuth = new google.auth.GoogleAuth({
-      credentials: {
-        client_email: this.configService.get<string>('GOOGLE_SERVICE_ACCOUNT_EMAIL'),
-        private_key: this.configService.get<string>('GOOGLE_PRIVATE_KEY')!.replace(/\\n/g, '\n'),
-      },
-      scopes: ['https://www.googleapis.com/auth/drive'],
-    });
-  
-    const serviceDrive = google.drive({ version: 'v3', auth: serviceAuth });
-  
-    await serviceDrive.permissions.create({
+    
+    // ✅ Google Drive propagation uchun kutish
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // Service Account'ga permission berish
+    await userDrive.permissions.create({
       fileId: newSheetId,
       requestBody: {
         type: 'user',
