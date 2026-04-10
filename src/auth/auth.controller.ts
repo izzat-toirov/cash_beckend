@@ -28,10 +28,10 @@ interface RequestWithUser extends Request {
 @ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name)
   constructor(
     private readonly authService: AuthService,
     private readonly configService: ConfigService,
-    private readonly logger = new Logger(AuthController.name)
   ) {}
 
   // ── API key tekshiruvi (oldingi) ──────────────────────────
