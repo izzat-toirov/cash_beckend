@@ -667,6 +667,7 @@ export class GoogleSheetsService {
         emailAddress: this.configService.get<string>('GOOGLE_SERVICE_ACCOUNT_EMAIL')!,
       },
       sendNotificationEmail: false,
+      fields: 'id',
     });
   
     this.logger.log(`Service account editor qilindi: ${newSheetId}`);
