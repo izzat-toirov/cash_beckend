@@ -106,13 +106,14 @@ export class TransactionsService {
       (r) => r.date === todayStr || r.date === yesterdayStr,
     );
 
-    const parseDate = (str: string) => {
-      const [dd, mm, yyyy] = str.split('.');
-      return new Date(`${yyyy}-${mm}-${dd}`).getTime();
-    };
-
     const sorted = [...(filtered.length > 0 ? filtered : records)]
-      .sort((a, b) => parseDate(b.date) - parseDate(a.date))
+      .sort((a, b) => {
+        const parseDate = (str: string) => {
+          const [dd, mm, yyyy] = str.split('.');
+          return new Date(`${yyyy}-${mm}-${dd}`).getTime();
+        };
+        return parseDate(b.date) - parseDate(a.date);
+      })
       .slice(0, 5);
 
     return { success: true, data: sorted };
