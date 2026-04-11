@@ -1,8 +1,19 @@
-import { Injectable, Logger, ConflictException, InternalServerErrorException } from '@nestjs/common';
+// src/auth/auth.service.ts
+
+import {
+  Injectable,
+  Logger,
+  ConflictException,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { GoogleSheetsService } from '../google-sheets/google-sheets.service';
-import { GoogleProfile, AuthenticatedUser, JwtPayload } from './types/auth.types';
+import {
+  GoogleProfile,
+  AuthenticatedUser,
+  JwtPayload,
+} from './types/auth.types';
 
 @Injectable()
 export class AuthService {
@@ -16,7 +27,7 @@ export class AuthService {
 
   async handleGoogleLogin(profile: GoogleProfile): Promise<AuthenticatedUser> {
     try {
-      // 1. Avval email bilan boshqa googleId bormi — conflict tekshirish
+      // 1. Email conflict tekshirish
       const emailConflict = await this.prisma.user.findUnique({
         where: { email: profile.email },
       });
@@ -27,7 +38,7 @@ export class AuthService {
         );
       }
 
-      // 2. Asosiy user qidirish
+      // 2. Mavjud user qidirish
       const existing = await this.prisma.user.findUnique({
         where: { googleId: profile.googleId },
       });
@@ -35,10 +46,11 @@ export class AuthService {
       let sheetId: string;
 
       if (existing) {
+        // ✅ Qaytuvchi user — mavjud sheetId ishlatiladi
         this.logger.log(`Qaytuvchi user: ${profile.email}`);
         sheetId = existing.sheetId;
       } else {
-        // 3. Yangi user — template nusxalanadi
+        // ✅ Yangi user — template nusxalanadi, yangi sheet yaratiladi
         this.logger.log(`Yangi user, sheet yaratilmoqda: ${profile.email}`);
 
         try {
@@ -48,22 +60,25 @@ export class AuthService {
             profile.accessToken,
           );
         } catch (sheetError: unknown) {
-          const message = sheetError instanceof Error ? sheetError.message : String(sheetError);
-          this.logger.error(`Sheet yaratishda xatolik [${profile.email}]: ${message}`);
+          const message =
+            sheetError instanceof Error ? sheetError.message : String(sheetError);
+          this.logger.error(
+            `Sheet yaratishda xatolik [${profile.email}]: ${message}`,
+          );
           throw new InternalServerErrorException(
-            'Google Sheet yaratishda xatolik yuz berdi. Qaytadan urinib ko\'ring.',
+            "Google Sheet yaratishda xatolik yuz berdi. Qaytadan urinib ko'ring.",
           );
         }
 
-        this.logger.log(`Sheet yaratildi: ${sheetId} → ${profile.email}`);
+        this.logger.log(`✅ Sheet yaratildi: ${sheetId} → ${profile.email}`);
       }
 
-      // 4. Upsert
+      // 3. DB upsert
       const user = await this.prisma.user.upsert({
         where: { googleId: profile.googleId },
         update: {
           displayName: profile.displayName,
-          email: profile.email, // email o'zgargan bo'lsa yangilansin
+          email: profile.email,
           lastLoginAt: new Date(),
         },
         create: {
@@ -75,7 +90,7 @@ export class AuthService {
         },
       });
 
-      this.logger.log(`Login muvaffaqiyatli: ${user.email}`);
+      this.logger.log(`✅ Login muvaffaqiyatli: ${user.email}`);
 
       return {
         googleId: user.googleId,
@@ -83,9 +98,7 @@ export class AuthService {
         displayName: user.displayName,
         sheetId: user.sheetId,
       };
-
     } catch (error: unknown) {
-      // ConflictException va InternalServerErrorException — qayta otish
       if (
         error instanceof ConflictException ||
         error instanceof InternalServerErrorException
@@ -94,8 +107,12 @@ export class AuthService {
       }
 
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`handleGoogleLogin umumiy xatolik [${profile.email}]: ${message}`);
-      throw new InternalServerErrorException('Login jarayonida xatolik yuz berdi.');
+      this.logger.error(
+        `handleGoogleLogin umumiy xatolik [${profile.email}]: ${message}`,
+      );
+      throw new InternalServerErrorException(
+        'Login jarayonida xatolik yuz berdi.',
+      );
     }
   }
 
@@ -103,7 +120,8 @@ export class AuthService {
     const payload: JwtPayload = {
       sub: user.googleId,
       email: user.email,
-      sheetId: user.sheetId,
+      sheetId: user.sheetId,        // ✅ sheetId token ichiga kiritiladi
+      displayName: user.displayName,
     };
 
     return this.jwtService.sign(payload);

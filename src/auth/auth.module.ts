@@ -1,34 +1,35 @@
+// src/auth/auth.module.ts
+
 import { Module } from '@nestjs/common';
-import { PassportModule } from '@nestjs/passport';
 import { JwtModule } from '@nestjs/jwt';
+import { PassportModule } from '@nestjs/passport';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
-import { GoogleStrategy } from './google.strategy';
+import { AuthController } from './auth.controller';
+import { PrismaModule } from '../prisma/prisma.module';
+import { GoogleSheetsModule } from '../google-sheets/google-sheets.module';
 import { JwtStrategy } from './jwt.strategy';
 import { JwtAuthGuard } from './jwt-auth.guard';
-import { GoogleSheetsModule } from '../google-sheets/google-sheets.module';
-import { PrismaModule } from '../prisma/prisma.module';
+import { GoogleStrategy } from './google.strategy';
 
 @Module({
   imports: [
-    ConfigModule,
-    PassportModule,
+    PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        secret: config.getOrThrow('JWT_SECRET'),
+        secret: config.getOrThrow<string>('JWT_SECRET'),
         signOptions: {
-          expiresIn: config.get('JWT_EXPIRES_IN', '7d'),
+          expiresIn: (config.get<string>('JWT_EXPIRES_IN', '7d')) as any,
         },
       }),
     }),
-    GoogleSheetsModule, 
     PrismaModule,
+    GoogleSheetsModule,
   ],
   controllers: [AuthController],
-  providers: [AuthService, GoogleStrategy, JwtStrategy, JwtAuthGuard],
-  exports: [JwtAuthGuard, AuthService],
+  providers: [AuthService, JwtStrategy, GoogleStrategy, JwtAuthGuard],
+  exports: [AuthService, JwtAuthGuard, JwtModule],
 })
 export class AuthModule {}

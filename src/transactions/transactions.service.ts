@@ -1,3 +1,5 @@
+// src/transactions/transactions.service.ts
+
 import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { GoogleSheetsService } from '../google-sheets/google-sheets.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
@@ -9,155 +11,146 @@ export class TransactionsService {
 
   constructor(private readonly sheetsService: GoogleSheetsService) {}
 
+  // ─── POST /transactions ───────────────────────────────────────────────────
 
-  async create(dto: CreateTransactionDto) {
+  async create(spreadsheetId: string, dto: CreateTransactionDto) {
     const year = dto.year ?? new Date().getFullYear();
     const month = dto.month ?? new Date().getMonth() + 1;
     const sheetName = this.sheetsService.getSheetName(year, month);
 
     if (dto.type === 'expense') {
-      await this.sheetsService.addExpenseRow(sheetName, [
-        dto.date,                
-        String(dto.amount),      
-        dto.category,       
-        dto.description ?? '',    
+      await this.sheetsService.addExpenseRow(spreadsheetId, sheetName, [
+        dto.date,
+        String(dto.amount),
+        dto.category,
+        dto.description ?? '',
       ]);
     } else {
-      await this.sheetsService.addIncomeRow(sheetName, [
-        dto.date,                   
-        String(dto.amount),       
-        dto.category,              
-        dto.description ?? '',     
+      await this.sheetsService.addIncomeRow(spreadsheetId, sheetName, [
+        dto.date,
+        String(dto.amount),
+        dto.category,
+        dto.description ?? '',
       ]);
     }
 
     return { success: true, data: { ...dto, sheetName } };
   }
 
-  // ─── PATCH /transactions/:id ──────────────────────────────────────────────────
+  // ─── PATCH /transactions/:id ──────────────────────────────────────────────
 
-  async update(id: string, dto: UpdateTransactionDto) {
+  async update(spreadsheetId: string, id: string, dto: UpdateTransactionDto) {
     const { type, rowIndex, sheetName } = this.parseId(id, dto);
 
-    const records = await this.sheetsService.getFinanceRecords(sheetName);
+    const records = await this.sheetsService.getFinanceRecords(spreadsheetId, sheetName);
     const existing = records.find((r) => r.id === id);
     if (!existing) throw new NotFoundException(`Transaction "${id}" topilmadi`);
 
-    if (type === 'expense') {
-      // ✅ B:E: [date, amount, description, category]
-      await this.sheetsService.updateRow(
-        sheetName,
-        rowIndex,
-        [
-          dto.date ?? existing.date,
-          String(dto.amount ?? existing.amount),
-          dto.description ?? existing.description ?? '',
-          dto.category ?? existing.category,
-        ],
-        'expense',
-      );
-    } else {
-      // ✅ H:K: [date, description, category, amount]
-      await this.sheetsService.updateRow(
-        sheetName,
-        rowIndex,
-        [
-          dto.date ?? existing.date,
-          String(dto.amount ?? existing.amount),
-          dto.description ?? existing.description ?? '',
-          dto.category ?? existing.category,
-        ],
-        'income',
-      );
-    }
+    await this.sheetsService.updateRow(
+      spreadsheetId,
+      sheetName,
+      rowIndex,
+      [
+        dto.date ?? existing.date,
+        String(dto.amount ?? existing.amount),
+        dto.description ?? existing.description ?? '',
+        dto.category ?? existing.category,
+      ],
+      type,
+    );
 
     return { success: true, id };
   }
 
-  // ─── GET /transactions?month=5&year=2026 ─────────────────────────────────────
+  // ─── GET /transactions ────────────────────────────────────────────────────
 
-  async findByMonth(month: number, year: number, page: number, limit: number) {
+  async findByMonth(
+    spreadsheetId: string,
+    month: number,
+    year: number,
+    page: number,
+    limit: number,
+  ) {
     const sheetName = this.sheetsService.getSheetName(year, month);
-    const records = await this.sheetsService.getFinanceRecords(sheetName);
-  
-    const sorted = [...records].sort((a, b) => {
-      return new Date(b.date).getTime() - new Date(a.date).getTime();
-    });
-  
+    const records = await this.sheetsService.getFinanceRecords(spreadsheetId, sheetName);
+
+    const sorted = [...records].sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+    );
+
     const total = sorted.length;
     const totalPages = Math.ceil(total / limit);
     const start = (page - 1) * limit;
     const data = sorted.slice(start, start + limit);
-  
-    return {
-      success: true,
-      data,
-      meta: {
-        total,
-        page,
-        limit,
-        totalPages,
-      },
-    };
+
+    return { success: true, data, meta: { total, page, limit, totalPages } };
   }
 
-  async findRecent(month: number, year: number) {
+  // ─── GET /transactions/recent ─────────────────────────────────────────────
+
+  async findRecent(spreadsheetId: string, month: number, year: number) {
     const sheetName = this.sheetsService.getSheetName(year, month);
-    const records = await this.sheetsService.getFinanceRecords(sheetName);
-  
+    const records = await this.sheetsService.getFinanceRecords(spreadsheetId, sheetName);
+
     const today = new Date();
     const yesterday = new Date(today);
     yesterday.setDate(today.getDate() - 1);
-  
+
     const formatDate = (d: Date): string =>
       `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}`;
-  
+
     const todayStr = formatDate(today);
     const yesterdayStr = formatDate(yesterday);
-  
+
     const filtered = records.filter(
-      (r) => r.date === todayStr || r.date === yesterdayStr
+      (r) => r.date === todayStr || r.date === yesterdayStr,
     );
-  
-    const sorted = [...(filtered.length > 0 ? filtered : records)]
-      .sort((a, b) => {
-        const parseDate = (str: string) => {
-          const [dd, mm, yyyy] = str.split('.');
-          return new Date(`${yyyy}-${mm}-${dd}`).getTime();
-        };
-        return parseDate(b.date) - parseDate(a.date);
-      })
-      .slice(0, 5);
-  
-    return {
-      success: true,
-      data: sorted,
+
+    const parseDate = (str: string) => {
+      const [dd, mm, yyyy] = str.split('.');
+      return new Date(`${yyyy}-${mm}-${dd}`).getTime();
     };
+
+    const sorted = [...(filtered.length > 0 ? filtered : records)]
+      .sort((a, b) => parseDate(b.date) - parseDate(a.date))
+      .slice(0, 5);
+
+    return { success: true, data: sorted };
   }
 
-  // ─── GET /transactions/:id ────────────────────────────────────────────────────
+  // ─── GET /transactions/:id ────────────────────────────────────────────────
 
-  async findOne(id: string, month?: number, year?: number) {
+  async findOne(
+    spreadsheetId: string,
+    id: string,
+    month?: number,
+    year?: number,
+  ) {
     const m = month ?? new Date().getMonth() + 1;
     const y = year ?? new Date().getFullYear();
     const sheetName = this.sheetsService.getSheetName(y, m);
 
-    const records = await this.sheetsService.getFinanceRecords(sheetName);
+    const records = await this.sheetsService.getFinanceRecords(spreadsheetId, sheetName);
     const record = records.find((r) => r.id === id);
 
     if (!record) throw new NotFoundException(`Transaction "${id}" topilmadi`);
     return { success: true, data: record };
   }
 
-  // ─── DELETE /transactions/:id ─────────────────────────────────────────────────
+  // ─── DELETE /transactions/:id ─────────────────────────────────────────────
 
-  async remove(id: string, month?: number, year?: number) {
+  async remove(
+    spreadsheetId: string,
+    id: string,
+    month?: number,
+    year?: number,
+  ) {
     const { rowIndex, sheetName } = this.parseId(id, { month, year });
-    await this.sheetsService.deleteRow(sheetName, rowIndex);
+    await this.sheetsService.deleteRow(spreadsheetId, sheetName, rowIndex);
     return { success: true, message: "Transaction o'chirildi", id };
   }
 
-  // ─── HELPER ───────────────────────────────────────────────────────────────────
+  // ─── HELPER ───────────────────────────────────────────────────────────────
 
   private parseId(
     id: string,

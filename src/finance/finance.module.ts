@@ -1,13 +1,14 @@
+// src/finance/finance.module.ts
+
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
 import { FinanceController } from './finance.controller';
 import { FinanceService } from './finance.service';
 import { GoogleSheetsModule } from '../google-sheets/google-sheets.module';
-import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports: [ConfigModule, GoogleSheetsModule, AuthModule],
+  imports: [GoogleSheetsModule],
   controllers: [FinanceController],
   providers: [FinanceService],
+  exports: [FinanceService],
 })
 export class FinanceModule {}

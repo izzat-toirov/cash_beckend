@@ -1,3 +1,5 @@
+// src/finance/finance.controller.ts
+
 import {
   Controller,
   Get,
@@ -16,30 +18,27 @@ import {
   CreateFinanceRecordDto,
   UpdateFinanceRecordDto,
 } from './dto/finance-record.dto';
-import { ApiKeyGuard } from '../auth/api-key.guard';
+import type { JwtPayload } from '../auth/types/auth.types';
+import { User } from '../auth/decorators/user.decorator';
 import {
   ApiTags,
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
-  ApiHeader,
   ApiParam,
   ApiQuery,
   ApiBody,
 } from '@nestjs/swagger';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller('finance')
-@UseGuards(ApiKeyGuard)
+@UseGuards(JwtAuthGuard)          // ✅ JWT Guard — barcha route'lar himoyalangan
 @ApiTags('Finance — Moliyaviy yozuvlar')
-@ApiHeader({
-  name: 'x-api-key',
-  description: 'API kalit — autentifikatsiya uchun (.env dagi API_KEY)',
-  required: true,
-})
-@ApiBearerAuth('x-api-key')
+@ApiBearerAuth()                  // Swagger: Authorization: Bearer <token>
 export class FinanceController {
-  constructor(private financeService: FinanceService) {}
+  constructor(private readonly financeService: FinanceService) {}
 
+  // ── POST /finance ─────────────────────────────────────────────────────────
 
   @Post()
   @ApiOperation({
@@ -52,115 +51,65 @@ Daromad yoki xarajat qo'shadi. \`date\` maydonidan avtomatik sheet nomi aniqlana
     `.trim(),
   })
   @ApiBody({ type: CreateFinanceRecordDto })
-  @ApiResponse({
-    status: 201,
-    description: "Yozuv muvaffaqiyatli qo'shildi",
-    schema: {
-      example: {
-        message: "Ma'lumot muvaffaqiyatli saqlandi",
-        data: null,
-      },
-    },
-  })
-  @ApiResponse({ status: 400, description: "Noto'g'ri so'rov ma'lumotlari" })
-  @ApiResponse({
-    status: 401,
-    description: "Autentifikatsiya xatosi (x-api-key noto'g'ri)",
-  })
-  async addRecord(@Body() dto: CreateFinanceRecordDto) {
-    const result = await this.financeService.addFinanceRecord(dto);
-    return { message: "Ma'lumot muvaffaqiyatli saqlandi", data: result };
+  @ApiResponse({ status: 201, description: "Yozuv muvaffaqiyatli qo'shildi" })
+  @ApiResponse({ status: 400, description: "Noto'g'ri ma'lumotlar yoki kategoriya" })
+  @ApiResponse({ status: 401, description: 'Token noto\'g\'ri yoki yo\'q' })
+  async addRecord(
+    @User() user: JwtPayload,                  // ✅ JWT dan user olinadi
+    @Body() dto: CreateFinanceRecordDto,
+  ) {
+    await this.financeService.addFinanceRecord(user.sheetId, dto);
+    return { message: "Ma'lumot muvaffaqiyatli saqlandi" };
   }
 
+  // ── GET /finance ──────────────────────────────────────────────────────────
 
   @Get()
   @ApiOperation({
     summary: 'Joriy oy yozuvlarini olish',
-    description:
-      "Joriy oy va yil bo'yicha Google Sheets'dan barcha yozuvlarni qaytaradi.",
+    description: "Joriy oy bo'yicha foydalanuvchining barcha yozuvlarini qaytaradi.",
   })
-  @ApiResponse({
-    status: 200,
-    description: 'Joriy oy yozuvlari',
-    schema: {
-      example: {
-        success: true,
-        data: [
-          {
-            id: 'expense-row-5',
-            date: '2026-04-01',
-            amount: 50000,
-            description: 'Taksi',
-            category: 'Transport',
-            type: 'expense',
-          },
-          {
-            id: 'income-row-5',
-            date: '2026-04-01',
-            amount: 5000000,
-            description: 'Maosh',
-            category: 'Maosh',
-            type: 'income',
-          },
-        ],
-      },
-    },
-  })
-  async getCurrentMonthRecords() {
-    return this.financeService.getCurrentMonthRecords();
+  @ApiResponse({ status: 200, description: 'Joriy oy yozuvlari' })
+  async getCurrentMonthRecords(@User() user: JwtPayload) {
+    return this.financeService.getCurrentMonthRecords(user.sheetId);
   }
 
+  // ── GET /finance/balance ──────────────────────────────────────────────────
 
   @Get('balance')
   @ApiOperation({
     summary: 'Balansni hisoblash',
-    description:
-      'Joriy oy uchun jami daromad, xarajat va sof balansni qaytaradi.',
+    description: 'Joriy yoki tanlangan oy uchun daromad, xarajat va sof balans.',
   })
-  @ApiQuery({
-    name: 'year',
-    required: false,
-    type: Number,
-    description: 'Yil. Default: joriy yil',
-    example: 2026,
-  })
-  @ApiQuery({
-    name: 'month',
-    required: false,
-    type: Number,
-    description: 'Oy (1–12). Default: joriy oy',
-    example: 4,
-  })
+  @ApiQuery({ name: 'year', required: false, type: Number, example: 2026 })
+  @ApiQuery({ name: 'month', required: false, type: Number, example: 4 })
   @ApiResponse({
     status: 200,
-    description: "Balans ma'lumotlari",
     schema: {
-      example: {
-        totalIncome: 1500000,
-        totalExpense: 1000000,
-        balance: 500000,
-      },
+      example: { totalIncome: 1500000, totalExpense: 1000000, balance: 500000 },
     },
   })
   async getBalance(
+    @User() user: JwtPayload,
     @Query('year') year?: string,
     @Query('month') month?: string,
   ) {
     return this.financeService.calculateBalance(
+      user.sheetId,
       year ? parseInt(year) : undefined,
       month ? parseInt(month) : undefined,
     );
   }
 
+  // ── GET /finance/categories ───────────────────────────────────────────────
 
   @Get('categories')
   @ApiOperation({
     summary: "Kategoriyalar ro'yxati",
-    description: "Google Sheets'dagi \"Kategoriyalar\" varag'idan o'qiydi.",
+    description: "Foydalanuvchining Сводка sheetidan kategoriyalarni oladi.",
   })
   @ApiResponse({
     status: 200,
-    description: 'Kategoriyalar',
     schema: {
       example: [
         { name: 'Maosh', type: 'income' },
@@ -168,10 +117,11 @@ Daromad yoki xarajat qo'shadi. \`date\` maydonidan avtomatik sheet nomi aniqlana
       ],
     },
   })
-  async getCategories() {
-    return this.financeService.getCategories();
+  async getCategories(@User() user: JwtPayload) {
+    return this.financeService.getCategories(user.sheetId);
   }
 
+  // ── GET /finance/records ──────────────────────────────────────────────────
 
   @Get('records')
   @ApiOperation({
@@ -182,102 +132,61 @@ Daromad yoki xarajat qo'shadi. \`date\` maydonidan avtomatik sheet nomi aniqlana
 - Hech narsa yo'q → joriy oy
     `.trim(),
   })
-  @ApiQuery({
-    name: 'year',
-    required: false,
-    type: Number,
-    description: 'Yil',
-    example: 2026,
-  })
-  @ApiQuery({
-    name: 'month',
-    required: false,
-    type: Number,
-    description: 'Oy (1–12)',
-    example: 4,
-  })
+  @ApiQuery({ name: 'year', required: false, type: Number, example: 2026 })
+  @ApiQuery({ name: 'month', required: false, type: Number, example: 4 })
   @ApiResponse({ status: 200, description: 'Filtrlangan yozuvlar' })
   async getFilteredRecords(
+    @User() user: JwtPayload,
     @Query('year') year?: string,
     @Query('month') month?: string,
   ) {
     return this.financeService.getFilteredRecords(
+      user.sheetId,
       year ? parseInt(year) : undefined,
       month ? parseInt(month) : undefined,
     );
   }
 
-  // ── GET /finance/month ────────────────────────────────────────────────────────
+  // ── GET /finance/month ────────────────────────────────────────────────────
 
   @Get('month')
-  @ApiOperation({
-    summary: 'Aniq bir oy yozuvlarini olish',
-  })
-  @ApiQuery({
-    name: 'year',
-    type: Number,
-    required: true,
-    description: 'Yil',
-    example: 2026,
-  })
-  @ApiQuery({
-    name: 'month',
-    type: Number,
-    required: true,
-    description: 'Oy (1–12)',
-    example: 4,
-  })
+  @ApiOperation({ summary: 'Aniq bir oy yozuvlarini olish' })
+  @ApiQuery({ name: 'year', type: Number, required: true, example: 2026 })
+  @ApiQuery({ name: 'month', type: Number, required: true, example: 4 })
   @ApiResponse({ status: 200, description: "So'ralgan oy yozuvlari" })
-  @ApiResponse({ status: 400, description: "Noto'g'ri yil/oy parametrlari" })
   async getMonthRecords(
+    @User() user: JwtPayload,
     @Query('year') year: string,
     @Query('month') month: string,
   ) {
-    return this.financeService.getMonthRecords(parseInt(year), parseInt(month));
+    return this.financeService.getMonthRecords(
+      user.sheetId,
+      parseInt(year),
+      parseInt(month),
+    );
   }
 
-  // ── PUT /finance/:id ──────────────────────────────────────────────────────────
+  // ── PUT /finance/:id ──────────────────────────────────────────────────────
 
   @Put(':id')
   @ApiOperation({
     summary: 'Moliyaviy yozuvni yangilash',
-    description: `
-\`id\` formati: \`expense-row-5\` yoki \`income-row-7\`
-
-Bu id \`GET /finance\` endpointidan qaytgan \`id\` maydonidir.
-    `.trim(),
+    description: '`id` formati: `expense-row-5` yoki `income-row-7`',
   })
-  @ApiParam({
-    name: 'id',
-    type: String,
-    description: 'Yozuv ID si',
-    example: 'expense-row-5',
-  })
-  @ApiQuery({
-    name: 'year',
-    required: false,
-    type: Number,
-    description: 'Sheet yili.  Default: joriy yil',
-    example: 2026,
-  })
-  @ApiQuery({
-    name: 'month',
-    required: false,
-    type: Number,
-    description: 'Sheet oyi.   Default: joriy oy',
-    example: 4,
-  })
+  @ApiParam({ name: 'id', type: String, example: 'expense-row-5' })
+  @ApiQuery({ name: 'year', required: false, type: Number, example: 2026 })
+  @ApiQuery({ name: 'month', required: false, type: Number, example: 4 })
   @ApiBody({ type: UpdateFinanceRecordDto })
   @ApiResponse({ status: 200, description: 'Yozuv muvaffaqiyatli yangilandi' })
-  @ApiResponse({ status: 400, description: "Noto'g'ri id format" })
-  @ApiResponse({ status: 404, description: 'Yozuv topilmadi' })
   async updateRecord(
+    @User() user: JwtPayload,
     @Param('id') id: string,
     @Body() dto: UpdateFinanceRecordDto,
     @Query('year') year?: string,
     @Query('month') month?: string,
   ) {
     await this.financeService.updateFinanceRecord(
+      user.sheetId,
       id,
       dto,
       year ? parseInt(year) : undefined,
@@ -286,46 +195,25 @@ Bu id \`GET /finance\` endpointidan qaytgan \`id\` maydonidir.
     return { message: 'Yozuv muvaffaqiyatli yangilandi', id };
   }
 
-  // ── DELETE /finance/:id ───────────────────────────────────────────────────────
+  // ── DELETE /finance/:id ───────────────────────────────────────────────────
 
   @Delete(':id')
   @ApiOperation({
     summary: "Moliyaviy yozuvni o'chirish",
-    description: `
-\`id\` formati: \`expense-row-5\` yoki \`income-row-7\`
-
-Google Sheets\'dan o\'sha qatorni to\'liq o\'chiradi.
-    `.trim(),
+    description: '`id` formati: `expense-row-5` yoki `income-row-7`',
   })
-  @ApiParam({
-    name: 'id',
-    type: String,
-    description: 'Yozuv ID si',
-    example: 'income-row-7',
-  })
-  @ApiQuery({
-    name: 'year',
-    required: false,
-    type: Number,
-    description: 'Sheet yili. Default: joriy yil',
-    example: 2026,
-  })
-  @ApiQuery({
-    name: 'month',
-    required: false,
-    type: Number,
-    description: 'Sheet oyi.  Default: joriy oy',
-    example: 4,
-  })
+  @ApiParam({ name: 'id', type: String, example: 'income-row-7' })
+  @ApiQuery({ name: 'year', required: false, type: Number, example: 2026 })
+  @ApiQuery({ name: 'month', required: false, type: Number, example: 4 })
   @ApiResponse({ status: 200, description: "Yozuv muvaffaqiyatli o'chirildi" })
-  @ApiResponse({ status: 400, description: "Noto'g'ri id format" })
-  @ApiResponse({ status: 404, description: 'Yozuv topilmadi' })
   async deleteRecord(
+    @User() user: JwtPayload,
     @Param('id') id: string,
     @Query('year') year?: string,
     @Query('month') month?: string,
   ) {
     await this.financeService.deleteFinanceRecord(
+      user.sheetId,
       id,
       year ? parseInt(year) : undefined,
       month ? parseInt(month) : undefined,
@@ -333,125 +221,97 @@ Google Sheets\'dan o\'sha qatorni to\'liq o\'chiradi.
     return { message: "Yozuv muvaffaqiyatli o'chirildi", id };
   }
 
+  // ── GET /finance/initial-amounts ──────────────────────────────────────────
 
   @Get('initial-amounts')
-@ApiOperation({
-  summary: "Boshlang'ich summalarni olish",
-  description: `Сводка sheetidan D17:E21 oralig'idagi boshlang'ich summalarni qaytaradi.
+  @ApiOperation({
+    summary: "Boshlang'ich summalarni olish",
+    description: `Сводка sheetidan C17:E21 oralig'idagi boshlang'ich summalar.
 - 0: Uzum bank karta
 - 1: Uzcard 2582
 - 2: Naqd pullar so'm
 - 3: Naqd AQSH dollari
 - 4: Va boshqalar`,
-})
-@ApiResponse({
-  status: 200,
-  description: "Boshlang'ich summalar ro'yxati",
-})
-async getInitialAmounts() {
-  return this.financeService.getInitialAmounts();
-}
-
-@Patch('initial-amounts/:rowIndex')
-@ApiOperation({
-  summary: "Boshlang'ich summani yangilash",
-  description: `Сводка sheetidagi E17:E21 qatorlaridan birini yangilaydi.
-
-rowIndex qiymatlari:
-- 0 → Uzum bank karta (E17)
-- 1 → Uzcard 2582 (E18)
-- 2 → Naqd pullar so'm (E19)
-- 3 → Naqd AQSH dollari (E20)
-- 4 → Va boshqalar (E21)`,
-})
-@ApiParam({
-  name: 'rowIndex',
-  type: Number,
-  description: 'Qator indeksi (0–4)',
-  example: 0,
-})
-@ApiBody({
-  schema: {
-    type: 'object',
-    properties: {
-      amount: {
-        type: 'number',
-        example: 150000,
-        description: "Yangi summa",
-      },
-    },
-    required: ['amount'],
-  },
-})
-@ApiResponse({
-  status: 200,
-  description: "Summa muvaffaqiyatli yangilandi",
-})
-@ApiResponse({
-  status: 400,
-  description: "Noto'g'ri rowIndex (0–4 bo'lishi kerak)",
-})
-async updateInitialAmount(
-  @Param('rowIndex', ParseIntPipe) rowIndex: number,
-  @Body('amount') amount: number,
-) {
-  return await this.financeService.updateInitialAmount(rowIndex, amount);
-}
-
-
-@Get('sheets')
-@ApiOperation({
-  summary: "Google Sheets dagi mavjud oylar ro'yxati",
-  description: "Сводка sheetidagi F2 katakdan mavjud sheet nomlarini qaytaradi.",
-})
-@ApiResponse({
-  status: 200,
-  schema: {
-    example: {
-      sheets: ['Mart', 'Aprel', 'May', 'Iyun']
-    }
+  })
+  @ApiResponse({ status: 200, description: "Boshlang'ich summalar" })
+  async getInitialAmounts(@User() user: JwtPayload) {
+    return this.financeService.getInitialAmounts(user.sheetId);
   }
-})
-async getAvailableSheets() {
-  return this.financeService.getAvailableSheets();
-}
 
+  // ── PATCH /finance/initial-amounts/:rowIndex ──────────────────────────────
 
-@Patch('sheets/active')
-@ApiOperation({
-  summary: "Сводка F2 katakdagi aktiv oyni o'zgartirish",
-  description: "F2 dagi dropdown qiymatini yangi oy nomi bilan yangilaydi.",
-})
-@ApiBody({
-  schema: {
-    type: 'object',
-    properties: {
-      sheetName: {
-        type: 'string',
-        example: 'May',
-        description: "Yangi aktiv oy nomi (F2 dropdown qiymati)",
-      },
+  @Patch('initial-amounts/:rowIndex')
+  @ApiOperation({
+    summary: "Boshlang'ich summani yangilash",
+    description: `Сводка sheetidagi E17:E21 qatorlaridan birini yangilaydi.
+- 0 → E17 | 1 → E18 | 2 → E19 | 3 → E20 | 4 → E21`,
+  })
+  @ApiParam({ name: 'rowIndex', type: Number, example: 0 })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { amount: { type: 'number', example: 150000 } },
+      required: ['amount'],
     },
-    required: ['sheetName'],
-  },
-})
-@ApiResponse({ status: 200, description: "Aktiv oy muvaffaqiyatli o'zgartirildi" })
-async setActiveSheet(@Body('sheetName') sheetName: string) {
-  return this.financeService.setActiveSheet(sheetName);
-}
-
-@Get('sheets/active')
-@ApiOperation({
-  summary: "Hozirgi aktiv oyni olish",
-  description: "Сводка sheetidagi F2 katakdagi joriy qiymatni qaytaradi.",
-})
-@ApiResponse({
-  status: 200,
-  schema: {
-    example: { name: 'Aprel 2025', month: 4, year: 2025 }
+  })
+  @ApiResponse({ status: 200, description: 'Summa muvaffaqiyatli yangilandi' })
+  async updateInitialAmount(
+    @User() user: JwtPayload,
+    @Param('rowIndex', ParseIntPipe) rowIndex: number,
+    @Body('amount') amount: number,
+  ) {
+    return this.financeService.updateInitialAmount(user.sheetId, rowIndex, amount);
   }
-})
-async getActiveSheet() {
-  return this.financeService.getActiveSheet();
-}
+
+  // ── GET /finance/sheets ───────────────────────────────────────────────────
+
+  @Get('sheets')
+  @ApiOperation({
+    summary: "Mavjud oylar ro'yxati",
+    description: "Foydalanuvchining spreadsheet'idagi oy sheetlari.",
+  })
+  @ApiResponse({
+    status: 200,
+    schema: { example: { sheets: ['Mart', 'Aprel', 'May'] } },
+  })
+  async getAvailableSheets(@User() user: JwtPayload) {
+    return this.financeService.getAvailableSheets(user.sheetId);
+  }
+
+  // ── PATCH /finance/sheets/active ─────────────────────────────────────────
+
+  @Patch('sheets/active')
+  @ApiOperation({
+    summary: "Aktiv oyni o'zgartirish",
+    description: "Сводка F2 katakdagi dropdown qiymatini yangilaydi.",
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { sheetName: { type: 'string', example: 'May' } },
+      required: ['sheetName'],
+    },
+  })
+  @ApiResponse({ status: 200, description: "Aktiv oy o'zgartirildi" })
+  async setActiveSheet(
+    @User() user: JwtPayload,
+    @Body('sheetName') sheetName: string,
+  ) {
+    return this.financeService.setActiveSheet(user.sheetId, sheetName);
+  }
+
+  // ── GET /finance/sheets/active ────────────────────────────────────────────
+
+  @Get('sheets/active')
+  @ApiOperation({
+    summary: 'Hozirgi aktiv oyni olish',
+    description: "Сводка F2 katakdagi joriy qiymat.",
+  })
+  @ApiResponse({
+    status: 200,
+    schema: { example: { name: 'Aprel', month: 4, year: 2026 } },
+  })
+  async getActiveSheet(@User() user: JwtPayload) {
+    return this.financeService.getActiveSheet(user.sheetId);
+  }
 }

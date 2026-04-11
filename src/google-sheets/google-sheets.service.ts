@@ -7,14 +7,13 @@ import {
   SvodkaData,
 } from '../common/types/finance.types';
 import { SHEET_CONSTANTS } from '../common/constants/sheets.constants';
-import { safeParseFloat } from '../common/utils/number-validation.util';
 
 @Injectable()
 export class GoogleSheetsService {
   private readonly logger = new Logger(GoogleSheetsService.name);
 
-  public sheets: sheets_v4.Sheets;
-  public spreadsheetId: string;
+  // ✅ auth public — FinanceService ham ishlatishi uchun
+  public readonly auth: any;
 
   private readonly MONTHS_UZ = [
     'Yanvar', 'Fevral', 'Mart', 'Aprel', 'May', 'Iyun',
@@ -22,28 +21,29 @@ export class GoogleSheetsService {
   ];
 
   constructor(private configService: ConfigService) {
-    const sheetId = this.configService.get<string>('GOOGLE_SHEET_ID');
-    if (!sheetId) {
-      throw new Error('GOOGLE_SHEET_ID is not configured');
-    }
-    this.spreadsheetId = sheetId;
-
     const privateKey = this.configService.get<string>('GOOGLE_PRIVATE_KEY');
     if (!privateKey) {
       throw new Error('GOOGLE_PRIVATE_KEY is not configured');
     }
 
-    const auth = new google.auth.GoogleAuth({
+    this.auth = new google.auth.GoogleAuth({
       credentials: {
         client_email: this.configService.get<string>('GOOGLE_SERVICE_ACCOUNT_EMAIL'),
         private_key: privateKey.replace(/\\n/g, '\n'),
       },
-      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+      scopes: [
+        'https://www.googleapis.com/auth/spreadsheets',
+        'https://www.googleapis.com/auth/drive',
+      ],
     });
-
-    this.sheets = google.sheets({ version: 'v4', auth });
   }
 
+  // ✅ Har doim yangi sheets instance — dynamic spreadsheetId uchun
+  private getSheetsClient(): sheets_v4.Sheets {
+    return google.sheets({ version: 'v4', auth: this.auth });
+  }
+
+  // ─── Sheet nomi yordamchilari ──────────────────────────────────────────────
 
   getCurrentMonthSheetName(): string {
     const now = new Date();
@@ -54,29 +54,40 @@ export class GoogleSheetsService {
     return this.MONTHS_UZ[month - 1];
   }
 
-  async getCellValue(sheetName: string, cell: string): Promise<number> {
-    const resp = await this.sheets.spreadsheets.values.get({
-      spreadsheetId: this.spreadsheetId,
+  // ─── Asosiy CRUD metodlar (har biri spreadsheetId oladi) ──────────────────
+
+  async getCellValue(
+    spreadsheetId: string,
+    sheetName: string,
+    cell: string,
+  ): Promise<number> {
+    const sheets = this.getSheetsClient();
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId,
       range: `${sheetName}!${cell}`,
     });
     const raw = resp.data.values?.[0]?.[0] ?? '0';
     return parseFloat(String(raw).replace(/[^\d.-]/g, '')) || 0;
   }
 
-
-  async addExpenseRow(sheetName: string, rowData: string[]): Promise<void> {
+  async addExpenseRow(
+    spreadsheetId: string,
+    sheetName: string,
+    rowData: string[],
+  ): Promise<void> {
+    const sheets = this.getSheetsClient();
     try {
-      await this.ensureSheetExists(sheetName);
-      const nextRow = await this.getNextAvailableRow(sheetName, 'expense');
+      await this.ensureSheetExists(spreadsheetId, sheetName);
+      const nextRow = await this.getNextAvailableRow(spreadsheetId, sheetName, 'expense');
 
-      await this.sheets.spreadsheets.values.update({
-        spreadsheetId: this.spreadsheetId,
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
         range: `${sheetName}!B${nextRow}:E${nextRow}`,
         valueInputOption: 'USER_ENTERED',
         requestBody: { values: [rowData] },
       });
 
-      this.logger.log(`✅ Xarajat ${nextRow}-qatorga yozildi (B:E): ${JSON.stringify(rowData)}`);
+      this.logger.log(`✅ Xarajat ${nextRow}-qatorga yozildi: ${JSON.stringify(rowData)}`);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`addExpenseRow xatolik: ${message}`);
@@ -84,19 +95,24 @@ export class GoogleSheetsService {
     }
   }
 
-  async addIncomeRow(sheetName: string, rowData: string[]): Promise<void> {
+  async addIncomeRow(
+    spreadsheetId: string,
+    sheetName: string,
+    rowData: string[],
+  ): Promise<void> {
+    const sheets = this.getSheetsClient();
     try {
-      await this.ensureSheetExists(sheetName);
-      const nextRow = await this.getNextAvailableRow(sheetName, 'income');
+      await this.ensureSheetExists(spreadsheetId, sheetName);
+      const nextRow = await this.getNextAvailableRow(spreadsheetId, sheetName, 'income');
 
-      await this.sheets.spreadsheets.values.update({
-        spreadsheetId: this.spreadsheetId,
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
         range: `${sheetName}!G${nextRow}:J${nextRow}`,
         valueInputOption: 'USER_ENTERED',
         requestBody: { values: [rowData] },
       });
 
-      this.logger.log(`✅ Daromad ${nextRow}-qatorga yozildi (G:J): ${JSON.stringify(rowData)}`);
+      this.logger.log(`✅ Daromad ${nextRow}-qatorga yozildi: ${JSON.stringify(rowData)}`);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`addIncomeRow xatolik: ${message}`);
@@ -104,35 +120,42 @@ export class GoogleSheetsService {
     }
   }
 
-  async addRow(sheetName: string, rowData: string[]): Promise<void> {
+  async addRow(
+    spreadsheetId: string,
+    sheetName: string,
+    rowData: string[],
+  ): Promise<void> {
     const type = rowData[rowData.length - 1];
 
     if (type === 'expense') {
-      await this.addExpenseRow(sheetName, [
-        rowData[0],
-        rowData[2],
-        rowData[3],
-        rowData[4],
+      await this.addExpenseRow(spreadsheetId, sheetName, [
+        rowData[0], // sana
+        rowData[2], // summa
+        rowData[3], // kategoriya
+        rowData[4], // tavsif
       ]);
     } else if (type === 'income') {
-      await this.addIncomeRow(sheetName, [
-        rowData[0],
-        rowData[3], 
-        rowData[4],
-        rowData[2], 
+      await this.addIncomeRow(spreadsheetId, sheetName, [
+        rowData[0], // sana
+        rowData[3], // tavsif
+        rowData[4], // kategoriya
+        rowData[2], // summa
       ]);
     } else {
       throw new Error(`Noto'g'ri type: "${type}"`);
     }
   }
 
-
-  async getFinanceRecords(sheetName: string): Promise<FinanceRecord[]> {
+  async getFinanceRecords(
+    spreadsheetId: string,
+    sheetName: string,
+  ): Promise<FinanceRecord[]> {
+    const sheets = this.getSheetsClient();
     const records: FinanceRecord[] = [];
 
     try {
-      const expenseResp = await this.sheets.spreadsheets.values.get({
-        spreadsheetId: this.spreadsheetId,
+      const expenseResp = await sheets.spreadsheets.values.get({
+        spreadsheetId,
         range: `${sheetName}!B5:E${SHEET_CONSTANTS.MAX_ROWS_PER_REQUEST}`,
       });
 
@@ -142,19 +165,21 @@ export class GoogleSheetsService {
             id: `expense-row-${index + 5}`,
             date: row[0],
             amount: parseFloat(String(row[1]).replace(/[^\d.-]/g, '')) || 0,
-            description: row[3] || '',  
-            category: row[2] || '',    
+            description: row[3] || '',
+            category: row[2] || '',
             type: 'expense',
           });
         }
       });
     } catch (error: unknown) {
-      this.logger.error(`Xarajat o'qishda xatolik: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.error(
+        `Xarajat o'qishda xatolik: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
 
     try {
-      const incomeResp = await this.sheets.spreadsheets.values.get({
-        spreadsheetId: this.spreadsheetId,
+      const incomeResp = await sheets.spreadsheets.values.get({
+        spreadsheetId,
         range: `${sheetName}!G5:J${SHEET_CONSTANTS.MAX_ROWS_PER_REQUEST}`,
       });
 
@@ -171,21 +196,24 @@ export class GoogleSheetsService {
         }
       });
     } catch (error: unknown) {
-      this.logger.error(`Daromad o'qishda xatolik: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.error(
+        `Daromad o'qishda xatolik: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
 
     return records;
   }
 
-
   async updateRow(
+    spreadsheetId: string,
     sheetName: string,
     rowIndex: number,
     rowData: string[],
     type: 'income' | 'expense',
   ): Promise<void> {
+    const sheets = this.getSheetsClient();
     try {
-      await this.ensureSheetExists(sheetName);
+      await this.ensureSheetExists(spreadsheetId, sheetName);
 
       let range: string;
       let values: string[];
@@ -194,17 +222,12 @@ export class GoogleSheetsService {
         range = `${sheetName}!B${rowIndex}:E${rowIndex}`;
         values = rowData;
       } else {
-        range = `${sheetName}!H${rowIndex}:K${rowIndex}`;
-        values = [
-          rowData[0],
-          rowData[2],
-          rowData[3],
-          rowData[1],
-        ];
+        range = `${sheetName}!G${rowIndex}:J${rowIndex}`;
+        values = [rowData[0], rowData[3], rowData[2], rowData[1]];
       }
 
-      await this.sheets.spreadsheets.values.update({
-        spreadsheetId: this.spreadsheetId,
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
         range,
         valueInputOption: 'USER_ENTERED',
         requestBody: { values: [values] },
@@ -212,19 +235,25 @@ export class GoogleSheetsService {
 
       this.logger.log(`✅ Yangilandi: ${range}`);
     } catch (error: unknown) {
-      this.logger.error(`updateRow xatolik: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.error(
+        `updateRow xatolik: ${error instanceof Error ? error.message : String(error)}`,
+      );
       throw error;
     }
   }
 
-
-  async deleteRow(sheetName: string, rowIndex: number): Promise<void> {
+  async deleteRow(
+    spreadsheetId: string,
+    sheetName: string,
+    rowIndex: number,
+  ): Promise<void> {
+    const sheets = this.getSheetsClient();
     try {
-      await this.ensureSheetExists(sheetName);
-      const sheetId = await this.getSheetId(sheetName);
+      await this.ensureSheetExists(spreadsheetId, sheetName);
+      const sheetId = await this.getSheetId(spreadsheetId, sheetName);
 
-      await this.sheets.spreadsheets.batchUpdate({
-        spreadsheetId: this.spreadsheetId,
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
         requestBody: {
           requests: [
             {
@@ -243,59 +272,56 @@ export class GoogleSheetsService {
 
       this.logger.log(`✅ O'chirildi: ${sheetName} qator ${rowIndex}`);
     } catch (error: unknown) {
-      this.logger.error(`deleteRow xatolik: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.error(
+        `deleteRow xatolik: ${error instanceof Error ? error.message : String(error)}`,
+      );
       throw error;
     }
   }
 
+  // ─── Kategoriyalar ─────────────────────────────────────────────────────────
 
-  async getCategories(): Promise<{ name: string; type: string }[]> {
+  async getCategories(
+    spreadsheetId: string,
+  ): Promise<{ name: string; type: string }[]> {
+    const sheets = this.getSheetsClient();
     try {
-      const response = await this.sheets.spreadsheets.values.batchGet({
-        spreadsheetId: this.spreadsheetId,
-        ranges: [
-          'Сводка!B38:B1000',
-          'Сводка!H38:H1000', 
-        ],
+      const response = await sheets.spreadsheets.values.batchGet({
+        spreadsheetId,
+        ranges: ['Сводка!B38:B1000', 'Сводка!H38:H1000'],
       });
-  
+
       const vals = response.data.valueRanges || [];
-  
+
       const expenses = (vals[0]?.values || [])
         .flat()
         .filter((c) => c && isNaN(Number(c)))
         .map((name) => ({ name, type: 'expense' }));
-  
+
       const income = (vals[1]?.values || [])
         .flat()
         .filter((c) => c && isNaN(Number(c)))
         .map((name) => ({ name, type: 'income' }));
-  
+
       return [...expenses, ...income];
     } catch (error: unknown) {
-      this.logger.error(`getCategories xatolik: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.error(
+        `getCategories xatolik: ${error instanceof Error ? error.message : String(error)}`,
+      );
       return [];
     }
   }
 
-  async getValidCategories(): Promise<{ expenses: string[]; income: string[] }> {
-    const ranges = ['Сводка!B28:B45', 'Сводка!H28:H45'];
-    const data = await this.getBatchData(ranges);
-
-    return {
-      expenses: data[0]?.flat().filter((c) => c && isNaN(Number(c))) || [],
-      income: data[1]?.flat().filter((c) => c && isNaN(Number(c))) || [],
-    };
-  }
-
   async validateCategoryStrict(
+    spreadsheetId: string,
     category: string,
     type: 'income' | 'expense',
   ): Promise<{ isValid: boolean; normalized?: string }> {
+    const sheets = this.getSheetsClient();
     try {
       const range = type === 'expense' ? 'Сводка!B28:B45' : 'Сводка!H28:H45';
-      const response = await this.sheets.spreadsheets.values.get({
-        spreadsheetId: this.spreadsheetId,
+      const response = await sheets.spreadsheets.values.get({
+        spreadsheetId,
         range,
       });
 
@@ -315,16 +341,20 @@ export class GoogleSheetsService {
 
       return { isValid: false };
     } catch (error: unknown) {
-      this.logger.error(`validateCategoryStrict xatolik: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.error(
+        `validateCategoryStrict xatolik: ${error instanceof Error ? error.message : String(error)}`,
+      );
       return { isValid: false };
     }
   }
 
+  // ─── Сводка ────────────────────────────────────────────────────────────────
 
-  async readSvodka(): Promise<SvodkaData> {
+  async readSvodka(spreadsheetId: string): Promise<SvodkaData> {
+    const sheets = this.getSheetsClient();
     try {
-      const resp = await this.sheets.spreadsheets.values.batchGet({
-        spreadsheetId: this.spreadsheetId,
+      const resp = await sheets.spreadsheets.values.batchGet({
+        spreadsheetId,
         ranges: [
           'Сводка!D21',
           'Сводка!D22',
@@ -337,7 +367,9 @@ export class GoogleSheetsService {
 
       const vals = resp.data.valueRanges || [];
       const parseNum = (vr: sheets_v4.Schema$ValueRange) =>
-        parseFloat(String(vr?.values?.[0]?.[0] || '0').replace(/[^\d.-]/g, '')) || 0;
+        parseFloat(
+          String(vr?.values?.[0]?.[0] || '0').replace(/[^\d.-]/g, ''),
+        ) || 0;
 
       const expensePlanned = parseNum(vals[0]);
       const expenseActual = parseNum(vals[1]);
@@ -362,105 +394,256 @@ export class GoogleSheetsService {
           diff: parseFloat(String(row[3] || '0').replace(/[^\d.-]/g, '')) || 0,
         }));
 
-      return { expensePlanned, expenseActual, incomePlanned, incomeActual, expenseCategories, incomeCategories };
+      return {
+        expensePlanned,
+        expenseActual,
+        incomePlanned,
+        incomeActual,
+        expenseCategories,
+        incomeCategories,
+      };
     } catch (error: unknown) {
-      this.logger.error(`readSvodka xatolik: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.error(
+        `readSvodka xatolik: ${error instanceof Error ? error.message : String(error)}`,
+      );
       throw error;
     }
   }
 
-  async getInitialAmount(): Promise<number> {
+  // ─── Initial amounts ───────────────────────────────────────────────────────
+
+  async getInitialAmounts(spreadsheetId: string): Promise<{
+    items: { label: string; amount: number }[];
+    totalBalance: number;
+    currentBalance: number;
+  }> {
+    const sheets = this.getSheetsClient();
     try {
-      const response = await this.sheets.spreadsheets.values.get({
-        spreadsheetId: this.spreadsheetId,
-        range: 'Сводка!I8',
-      });
-      const raw = response.data.values?.[0]?.[0];
-      if (!raw) return 0;
-      return parseFloat(String(raw).replace(/[^\d.-]/g, '')) || 0;
+      const [amountsResp, balanceResp, currentBalanceResp] = await Promise.all([
+        sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: 'Сводка!C17:E21',
+        }),
+        sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: 'Сводка!F17',
+        }),
+        sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: 'Сводка!H17',
+        }),
+      ]);
+
+      const parseSheetNumber = (str: string | undefined): number => {
+        if (!str) return 0;
+        return parseFloat(str.replace(/\s/g, '').replace(',', '.')) || 0;
+      };
+
+      const rows = amountsResp.data.values || [];
+      const totalBalance = parseSheetNumber(
+        String(balanceResp.data.values?.[0]?.[0] || ''),
+      );
+      const currentBalance = parseSheetNumber(
+        String(currentBalanceResp.data.values?.[0]?.[0] || ''),
+      );
+
+      return {
+        items: rows.map((row) => ({
+          label: row[0] || '',
+          amount: parseSheetNumber(row[2]),
+        })),
+        totalBalance,
+        currentBalance,
+      };
     } catch (error: unknown) {
-      this.logger.error(`getInitialAmount xatolik: ${error instanceof Error ? error.message : String(error)}`);
-      return 0;
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`getInitialAmounts xatolik: ${message}`);
+      throw error;
     }
   }
 
-  async setInitialAmount(amount: number): Promise<void> {
+  async updateInitialAmount(
+    spreadsheetId: string,
+    rowIndex: number,
+    amount: number,
+  ): Promise<{ success: boolean; message: string; sheetRow: number; amount: number }> {
+    const sheets = this.getSheetsClient();
+    let sheetRow: number;
+
+    if (rowIndex >= 17 && rowIndex <= 21) {
+      sheetRow = rowIndex;
+    } else if (rowIndex >= 0 && rowIndex <= 4) {
+      sheetRow = 17 + rowIndex;
+    } else {
+      throw new BadRequestException("rowIndex 0–4 yoki 17–21 bo'lishi kerak");
+    }
+
     try {
-      await this.sheets.spreadsheets.values.update({
-        spreadsheetId: this.spreadsheetId,
-        range: 'Сводка!I8',
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `Сводка!E${sheetRow}`,
         valueInputOption: 'USER_ENTERED',
-        requestBody: { values: [[String(amount)]] },
+        requestBody: { values: [[amount.toString()]] },
       });
-      this.logger.log(`✅ Initial amount set: ${amount}`);
+
+      this.logger.log(`✅ InitialAmount ${sheetRow}-qator yangilandi: ${amount}`);
+
+      return {
+        success: true,
+        message: 'Summa muvaffaqiyatli yangilandi',
+        sheetRow,
+        amount,
+      };
     } catch (error: unknown) {
-      this.logger.error(`setInitialAmount xatolik: ${error instanceof Error ? error.message : String(error)}`);
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`updateInitialAmount xatolik: ${message}`);
       throw error;
     }
   }
 
-  async getBatchData(ranges: string[]): Promise<string[][][]> {
-    const response = await this.sheets.spreadsheets.values.batchGet({
-      spreadsheetId: this.spreadsheetId,
+  // ─── Active sheet (Сводка F2) ──────────────────────────────────────────────
+
+  async getAvailableSheets(spreadsheetId: string): Promise<{ sheets: string[] }> {
+    const sheets = this.getSheetsClient();
+    try {
+      const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
+      const sheetNames = (spreadsheet.data.sheets || [])
+        .map((s) => s.properties?.title || '')
+        .filter(
+          (name) =>
+            name !== 'Сводка' &&
+            name !== 'Categories' &&
+            name !== '' &&
+            this.MONTHS_UZ.includes(name),
+        );
+      return { sheets: sheetNames };
+    } catch (error: unknown) {
+      this.logger.error(
+        `getAvailableSheets xatolik: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
+    }
+  }
+
+  async getActiveSheet(spreadsheetId: string): Promise<{
+    name: string;
+    month: number;
+    year: number;
+  }> {
+    const sheets = this.getSheetsClient();
+    try {
+      const response = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: 'Сводка!F2',
+      });
+
+      const rawName = response.data.values?.[0]?.[0] || this.getCurrentMonthSheetName();
+      const monthIndex = this.MONTHS_UZ.indexOf(rawName);
+      const now = new Date();
+
+      return {
+        name: rawName,
+        month: monthIndex >= 0 ? monthIndex + 1 : now.getMonth() + 1,
+        year: now.getFullYear(),
+      };
+    } catch (error: unknown) {
+      this.logger.error(
+        `getActiveSheet xatolik: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
+    }
+  }
+
+  async setActiveSheet(
+    spreadsheetId: string,
+    sheetName: string,
+  ): Promise<{ success: boolean; message: string }> {
+    const sheets = this.getSheetsClient();
+    try {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: 'Сводка!F2',
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [[sheetName]] },
+      });
+
+      this.logger.log(`✅ Aktiv oy o'zgartirildi: ${sheetName}`);
+      return { success: true, message: `Aktiv oy: ${sheetName}` };
+    } catch (error: unknown) {
+      this.logger.error(
+        `setActiveSheet xatolik: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
+    }
+  }
+
+  // ─── Batch / utility ───────────────────────────────────────────────────────
+
+  async getBatchData(
+    spreadsheetId: string,
+    ranges: string[],
+  ): Promise<string[][][]> {
+    const sheets = this.getSheetsClient();
+    const response = await sheets.spreadsheets.values.batchGet({
+      spreadsheetId,
       ranges,
     });
     return (response.data.valueRanges ?? []).map((r) => r.values ?? [[]]);
   }
 
-  async getValuesWithFormulas(range: string): Promise<string[][]> {
-    const response = await this.sheets.spreadsheets.values.get({
-      spreadsheetId: this.spreadsheetId,
-      range,
-      valueRenderOption: 'FORMULA',
-    });
-    return response.data.values ?? [];
-  }
-
-  async validateSheetNameSync(sheetName: string): Promise<boolean> {
+  async readSheet(spreadsheetId: string, sheetName: string): Promise<SheetData> {
     try {
-      const response = await this.sheets.spreadsheets.values.get({
-        spreadsheetId: this.spreadsheetId,
-        range: 'Сводка!D10',
+      await this.ensureSheetExists(spreadsheetId, sheetName);
+      const sheets = this.getSheetsClient();
+      const response = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: `${sheetName}!B:K`,
       });
-      const svodkaMonth = response.data.values?.[0]?.[0];
-      const monthOnly = sheetName.split(' ')[0];
-      return svodkaMonth === monthOnly;
+      const rows = response.data.values || [];
+      return { sheetName, headers: rows[0] || [], rows: rows.slice(1) };
     } catch (error: unknown) {
-      this.logger.error(`validateSheetNameSync xatolik: ${error instanceof Error ? error.message : String(error)}`);
-      return false;
-    }
-  }
-
-
-  async ensureSheetExists(sheetName: string): Promise<void> {
-    try {
-      const spreadsheet = await this.sheets.spreadsheets.get({
-        spreadsheetId: this.spreadsheetId,
-      });
-      const exists = spreadsheet.data.sheets?.some(
-        (s) => s.properties?.title === sheetName,
+      this.logger.error(
+        `readSheet xatolik: ${error instanceof Error ? error.message : String(error)}`,
       );
-      if (!exists) {
-        await this.createSheet(sheetName);
-      }
-    } catch (error: unknown) {
-      this.logger.error(`ensureSheetExists xatolik: ${error instanceof Error ? error.message : String(error)}`);
       throw error;
     }
   }
 
-  async createSheet(sheetName: string): Promise<void> {
+  // ─── Sheet management ──────────────────────────────────────────────────────
+
+  async ensureSheetExists(
+    spreadsheetId: string,
+    sheetName: string,
+  ): Promise<void> {
+    const sheets = this.getSheetsClient();
     try {
-      await this.sheets.spreadsheets.batchUpdate({
-        spreadsheetId: this.spreadsheetId,
+      const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
+      const exists = spreadsheet.data.sheets?.some(
+        (s) => s.properties?.title === sheetName,
+      );
+      if (!exists) {
+        await this.createSheet(spreadsheetId, sheetName);
+      }
+    } catch (error: unknown) {
+      this.logger.error(
+        `ensureSheetExists xatolik: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
+    }
+  }
+
+  async createSheet(spreadsheetId: string, sheetName: string): Promise<void> {
+    const sheets = this.getSheetsClient();
+    try {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
         requestBody: {
           requests: [{ addSheet: { properties: { title: sheetName } } }],
         },
       });
 
-      // Sarlavhalar
-      await this.sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: this.spreadsheetId,
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId,
         requestBody: {
           valueInputOption: 'USER_ENTERED',
           data: [
@@ -473,13 +656,11 @@ export class GoogleSheetsService {
               values: [['Доходы (Daromadlar)']],
             },
             {
-              // ✅ B:E sarlavhalar
               range: `${sheetName}!B4:E4`,
-              values: [['Sana', 'Summa', 'Tavsif', 'Kategoriya']],
+              values: [['Sana', 'Summa', 'Kategoriya', 'Tavsif']],
             },
             {
-              // ✅ H:K sarlavhalar
-              range: `${sheetName}!H4:K4`,
+              range: `${sheetName}!G4:J4`,
               values: [['Sana', 'Tavsif', 'Kategoriya', 'Summa']],
             },
           ],
@@ -488,31 +669,64 @@ export class GoogleSheetsService {
 
       this.logger.log(`✅ Sheet yaratildi: ${sheetName}`);
     } catch (error: unknown) {
-      this.logger.error(`createSheet xatolik: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.error(
+        `createSheet xatolik: ${error instanceof Error ? error.message : String(error)}`,
+      );
       throw error;
     }
   }
 
-  async readSheet(sheetName: string): Promise<SheetData> {
-    try {
-      await this.ensureSheetExists(sheetName);
-      const response = await this.sheets.spreadsheets.values.get({
-        spreadsheetId: this.spreadsheetId,
-        range: `${sheetName}!B:K`,
-      });
-      const rows = response.data.values || [];
-      return { sheetName, headers: rows[0] || [], rows: rows.slice(1) };
-    } catch (error: unknown) {
-      this.logger.error(`readSheet xatolik: ${error instanceof Error ? error.message : String(error)}`);
-      throw error;
-    }
-  }
+  // ─── Template copy (yangi user uchun) ─────────────────────────────────────
 
+  async copyTemplateForUser(
+    email: string,
+    displayName: string,
+    userAccessToken: string,
+  ): Promise<string> {
+    const userAuth = new google.auth.OAuth2();
+    userAuth.setCredentials({ access_token: userAccessToken });
 
-  private async getSheetId(sheetName: string): Promise<number> {
-    const spreadsheet = await this.sheets.spreadsheets.get({
-      spreadsheetId: this.spreadsheetId,
+    const userDrive = google.drive({ version: 'v3', auth: userAuth });
+    const templateId = this.configService.getOrThrow('TEMPLATE_SHEET_ID');
+
+    const { data } = await userDrive.files.copy({
+      fileId: templateId,
+      requestBody: { name: `Cashflow — ${displayName}` },
+      fields: 'id',
     });
+
+    const newSheetId = data.id!;
+    this.logger.log(`Yangi sheet yaratildi: ${newSheetId} (${email})`);
+
+    // Google Drive propagation uchun kutish
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    // Service Account ga editor ruxsati berish
+    await userDrive.permissions.create({
+      fileId: newSheetId,
+      requestBody: {
+        type: 'user',
+        role: 'writer',
+        emailAddress: this.configService.get<string>(
+          'GOOGLE_SERVICE_ACCOUNT_EMAIL',
+        )!,
+      },
+      sendNotificationEmail: false,
+      fields: 'id',
+    });
+
+    this.logger.log(`✅ Service account editor qilindi: ${newSheetId}`);
+    return newSheetId;
+  }
+
+  // ─── Private helpers ───────────────────────────────────────────────────────
+
+  private async getSheetId(
+    spreadsheetId: string,
+    sheetName: string,
+  ): Promise<number> {
+    const sheets = this.getSheetsClient();
+    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
     const sheet = spreadsheet.data.sheets?.find(
       (s) => s.properties?.title === sheetName,
     );
@@ -522,16 +736,18 @@ export class GoogleSheetsService {
     return sheet.properties.sheetId;
   }
 
-
   private async getNextAvailableRow(
+    spreadsheetId: string,
     sheetName: string,
     type: 'income' | 'expense',
   ): Promise<number> {
+    const sheets = this.getSheetsClient();
     const startRow = 5;
+    // expense → B ustun (summa), income → H ustun (sana)
     const column = type === 'expense' ? 'C' : 'H';
 
-    const response = await this.sheets.spreadsheets.values.get({
-      spreadsheetId: this.spreadsheetId,
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
       range: `${sheetName}!${column}${startRow}:${column}1000`,
     });
 
@@ -542,126 +758,5 @@ export class GoogleSheetsService {
       }
     }
     return startRow + rows.length;
-  }
-
-  async getInitialAmounts(): Promise<{
-    items: { label: string; amount: number }[];
-    totalBalance: number;
-    currentBalance: number; 
-  }> {
-    try {
-      const [amountsResp, balanceResp, currentBalanceResp] = await Promise.all([
-        this.sheets.spreadsheets.values.get({
-          spreadsheetId: this.spreadsheetId,
-          range: `Сводка!C17:E21`,
-        }),
-        this.sheets.spreadsheets.values.get({
-          spreadsheetId: this.spreadsheetId,
-          range: `Сводка!F17`,
-        }),
-        this.sheets.spreadsheets.values.get({
-          spreadsheetId: this.spreadsheetId,
-          range: `Сводка!H17`,
-        }),
-      ]);
-  
-      const parseSheetNumber = (str: string | undefined): number => {
-        if (!str) return 0;
-        return parseFloat(str.replace(/\s/g, '').replace(',', '.')) || 0;
-      };
-  
-      const rows = amountsResp.data.values || [];
-      const totalBalance = parseSheetNumber(String(balanceResp.data.values?.[0]?.[0] || ''));
-      const currentBalance = parseSheetNumber(String(currentBalanceResp.data.values?.[0]?.[0] || ''));
-  
-      return {
-        items: rows.map((row) => ({
-          label: row[0] || '',
-          amount: parseSheetNumber(row[2]),
-        })),
-        totalBalance,
-        currentBalance,
-      };
-  
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`getInitialAmounts xatolik: ${message}`);
-      throw error;
-    }
-  }
-  
-  async updateInitialAmount(rowIndex: number, amount: number): Promise<{ success: boolean; message: string; sheetRow: number; amount: number }> {
-    let sheetRow: number;
-  
-    if (rowIndex >= 17 && rowIndex <= 21) {
-      sheetRow = rowIndex;
-    } else if (rowIndex >= 0 && rowIndex <= 4) {
-      sheetRow = 17 + rowIndex;
-    } else {
-      throw new BadRequestException('rowIndex 0–4 yoki 17–21 bo\'lishi kerak');
-    }
-  
-    try {
-      await this.sheets.spreadsheets.values.update({
-        spreadsheetId: this.spreadsheetId,
-        range: `Сводка!E${sheetRow}`,
-        valueInputOption: 'USER_ENTERED',
-        requestBody: { values: [[amount.toString()]] },
-      });
-  
-      this.logger.log(`✅ InitialAmount ${sheetRow}-qator yangilandi: ${amount}`);
-      
-      return {
-        success: true,
-        message: "Summa muvaffaqiyatli yangilandi",
-        sheetRow,
-        amount,
-      };
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`updateInitialAmount xatolik: ${message}`);
-      throw error;
-    }
-  }
-
-  async copyTemplateForUser(
-    email: string,
-    displayName: string,
-    userAccessToken: string, // ← qo'shildi
-  ): Promise<string> {
-    // User o'z tokenini ishlatadi — fayl USER Drive'ida yaratiladi
-    const userAuth = new google.auth.OAuth2();
-    userAuth.setCredentials({ access_token: userAccessToken });
-  
-    const userDrive = google.drive({ version: 'v3', auth: userAuth });
-    const templateId = this.configService.getOrThrow('TEMPLATE_SHEET_ID');
-  
-    // Fayl USER'ning Drive'ida yaratiladi — quota muammosi yo'q
-    const { data } = await userDrive.files.copy({
-      fileId: templateId,
-      requestBody: { name: `Cashflow — ${displayName}` },
-      fields: 'id',
-    });
-    
-    const newSheetId = data.id!;
-    this.logger.log(`Yangi sheet yaratildi: ${newSheetId} (${email})`);
-    
-    // ✅ Google Drive propagation uchun kutish
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    
-    // Service Account'ga permission berish
-    await userDrive.permissions.create({
-      fileId: newSheetId,
-      requestBody: {
-        type: 'user',
-        role: 'writer',
-        emailAddress: this.configService.get<string>('GOOGLE_SERVICE_ACCOUNT_EMAIL')!,
-      },
-      sendNotificationEmail: false,
-      fields: 'id',
-    });
-  
-    this.logger.log(`Service account editor qilindi: ${newSheetId}`);
-    return newSheetId;
   }
 }
