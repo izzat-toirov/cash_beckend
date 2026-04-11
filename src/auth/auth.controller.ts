@@ -1,7 +1,10 @@
 import {
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Logger,
+  Post,
   Req,
   Res,
   UseGuards,
@@ -87,4 +90,17 @@ export class AuthController {
       sheetId: req.user.sheetId,
     };
   }
+
+  @Post('logout')
+@HttpCode(HttpStatus.OK)
+logout(@Res({ passthrough: true }) res: Response) {
+  res.clearCookie('token', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+  });
+
+  return { success: true, message: "Muvaffaqiyatli chiqildi" };
+}
 }

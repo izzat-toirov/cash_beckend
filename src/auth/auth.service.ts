@@ -126,4 +126,11 @@ export class AuthService {
 
     return this.jwtService.sign(payload);
   }
+
+  logout(): { success: boolean; message: string } {
+    // JWT stateless — server tomonda token bekor qilinmaydi
+    // Cookie o'chirish controller da bajariladi
+    this.logger.log('User logged out');
+    return { success: true, message: "Muvaffaqiyatli chiqildi" };
+  }
 }
