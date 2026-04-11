@@ -17,7 +17,8 @@ import { FinanceRecord } from '../common/types/finance.types';
 export class FinanceService {
   private readonly logger = new Logger(FinanceService.name);
 
-  constructor(private readonly sheetsService: GoogleSheetsService) {}
+  constructor(private readonly sheetsService: GoogleSheetsService
+  ) {}
 
   // ─── Yozuv qo'shish ────────────────────────────────────────────────────────
 
@@ -75,30 +76,29 @@ export class FinanceService {
     spreadsheetId: string,
     year?: number,
     month?: number,
-  ): Promise<{ totalIncome: number; totalExpense: number; balance: number }> {
-    const now = new Date();
-    const y = year ?? now.getFullYear();
-    const m = month ?? now.getMonth() + 1;
-    const sheetName = this.sheetsService.getSheetName(y, m);
-
-    const records = await this.sheetsService.getFinanceRecords(
-      spreadsheetId,
-      sheetName,
-    );
-
-    const totalIncome = records
-      .filter((r) => r.type === 'income')
-      .reduce((sum, r) => sum + r.amount, 0);
-
-    const totalExpense = records
-      .filter((r) => r.type === 'expense')
-      .reduce((sum, r) => sum + r.amount, 0);
-
-    return {
-      totalIncome,
-      totalExpense,
-      balance: totalIncome - totalExpense,
-    };
+  ): Promise<{
+    totalIncome: number;
+    totalExpense: number;
+    balance: number;
+  }> {
+    try {
+      const svodkaSheet = 'Сводка';
+  
+      const [totalExpense, totalIncome, balance] = await Promise.all([
+        this.sheetsService.getCellValue(spreadsheetId, svodkaSheet, 'C24'),
+        this.sheetsService.getCellValue(spreadsheetId, svodkaSheet, 'I24'),
+        this.sheetsService.getCellValue(spreadsheetId, svodkaSheet, 'E15'),
+      ]);
+  
+      this.logger.log(
+        `Balance from Сводка: income=${totalIncome}, expense=${totalExpense}, balance=${balance}`,
+      );
+  
+      return { totalIncome, totalExpense, balance };
+    } catch (error: any) {
+      this.logger.error(`Error calculating balance: ${error.message}`);
+      throw new BadRequestException('Failed to calculate balance');
+    }
   }
 
   // ─── Kategoriyalar ─────────────────────────────────────────────────────────
